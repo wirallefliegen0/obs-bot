@@ -154,6 +154,10 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             
             print(f"[!] Gemini returned empty or invalid response")
             return None
+                
+        except Exception as e:
+            print(f"[!] Gemini Vision error: {e}")
+            return None
     
     def _try_multiple_ocr_approaches(self, original_image: Image.Image) -> list[str]:
         """Try multiple preprocessing approaches and return all results."""
