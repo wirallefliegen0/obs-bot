@@ -109,38 +109,58 @@ Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
 Örnek: Eğer görüntü "25+17=?" ise, sadece "42" yaz.
 Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
 
-            # Use gemini-1.5-pro as stable fallback since 3.0 might not be available or named differently
-            # User intent is "best pro model". 1.5-pro is current stable pro.
-            # If 2.0-pro-exp exists we could try that, but 1.5-pro is safer for reliability.
-            model_id = 'gemini-1.5-pro'
+            # Try multiple models in order of preference/availability
+            models_to_try = [
+                'gemini-2.0-flash',      # Latest flash model (fast & capable)
+                'gemini-1.5-pro',        # Stable pro model
+                'gemini-1.5-flash',      # Stable flash model
+                'gemini-pro-vision',     # Legacy vision model
+            ]
             
-            max_gemini_retries = 3
             response = None
+            used_model = None
             
-            for i in range(max_gemini_retries):
+            for model_id in models_to_try:
                 try:
-                    response = client.models.generate_content(
-                        model=model_id,
-                        contents=[
-                            prompt,
-                            types.Part.from_bytes(
-                                data=img_byte_arr.getvalue(),
-                                mime_type="image/png"
+                    # print(f"[*] Trying Gemini model: {model_id}") # Optional debug
+                    
+                    max_gemini_retries = 2
+                    for i in range(max_gemini_retries):
+                        try:
+                            response = client.models.generate_content(
+                                model=model_id,
+                                contents=[
+                                    prompt,
+                                    types.Part.from_bytes(
+                                        data=img_byte_arr.getvalue(),
+                                        mime_type="image/png"
+                                    )
+                                ]
                             )
-                        ]
-                    )
-                    break # Success
+                            used_model = model_id
+                            break # Success for this model
+                        except Exception as e:
+                            # Rate limit handling
+                            if "429" in str(e) and i < max_gemini_retries - 1:
+                                wait_time = 5 * (i + 1)
+                                time.sleep(wait_time)
+                                img_byte_arr.seek(0)
+                            else:
+                                raise e # Re-raise to try next model
+                    
+                    if response:
+                        break # Found a working model and got response
+                        
                 except Exception as e:
-                    # Check for rate limit error (usually 429)
-                    if "429" in str(e) and i < max_gemini_retries - 1:
-                        wait_time = 10 * (i + 1)
-                        print(f"[!] Gemini Rate Limit (429). Waiting {wait_time}s...")
-                        time.sleep(wait_time)
-                    else:
-                        print(f"[!] Gemini error: {e}")
-                        # Fallback to older model if model not found? 
-                        # But for now just fail gracefully to OCR
-                        return None
+                    # If 404 (model not found) or other error, try next model
+                    if "404" in str(e):
+                        continue
+                    # print(f"[!] Error with model {model_id}: {e}")
+                    continue
+            
+            if not response:
+                print("[!] All Gemini models failed or not found")
+                return None
             
             # Extract the answer
             if response and response.text:
@@ -149,7 +169,7 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                 answer = re.sub(r'[^0-9]', '', answer)
                 
                 if answer:
-                    print(f"[*] Gemini Vision ({model_id}) answer: {answer}")
+                    print(f"[*] Gemini Vision ({used_model}) answer: {answer}")
                     return answer
             
             print(f"[!] Gemini returned empty or invalid response")
