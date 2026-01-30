@@ -186,7 +186,24 @@ class OBSSession:
         print(f"[!] Cannot solve captcha: {captcha_text}")
         return None
     
-    def login(self) -> bool:
+    def login(self, max_retries: int = 3) -> bool:
+        """
+        Login to BTU OBS system with retry mechanism.
+        Retries on captcha failure since OCR might misread.
+        """
+        for attempt in range(1, max_retries + 1):
+            print(f"\n[*] Login attempt {attempt}/{max_retries}")
+            if self._attempt_login():
+                return True
+            
+            if attempt < max_retries:
+                print(f"[*] Retrying with fresh captcha...")
+                time.sleep(2)
+        
+        print(f"[!] All {max_retries} login attempts failed")
+        return False
+    
+    def _attempt_login(self) -> bool:
         """
         Login to BTU OBS system using Selenium with OCR captcha solving.
         Returns True if successful, False otherwise.
