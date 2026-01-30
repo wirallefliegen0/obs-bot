@@ -76,29 +76,37 @@ class OBSSession:
         """Try multiple preprocessing approaches and return all results."""
         results = []
         
-        # Try different thresholds
+        # Try different thresholds and also inverted image
         thresholds = [100, 128, 150, 180]
         
-        for thresh in thresholds:
-            processed = self._preprocess_captcha_image(original_image.copy(), threshold=thresh)
-            
-            # Try different OCR configs
-            configs = [
-                r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789+=?',
-                r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789+=?',
-            ]
-            
-            for cfg in configs:
-                try:
-                    text = pytesseract.image_to_string(processed, config=cfg)
-                    text = text.strip().replace(' ', '').replace('\n', '')
-                    # Remove leading/trailing non-digits
-                    text = re.sub(r'^[^0-9]*', '', text)
-                    text = re.sub(r'[^0-9+\-=?]*$', '', text)
-                    if text and any(c.isdigit() for c in text):
-                        results.append(text)
-                except:
-                    continue
+        images_to_try = [original_image]
+        
+        # Also try inverted image
+        inverted = original_image.copy().convert('L')
+        inverted = Image.eval(inverted, lambda x: 255 - x)
+        images_to_try.append(inverted.convert('RGB'))
+        
+        for img in images_to_try:
+            for thresh in thresholds:
+                processed = self._preprocess_captcha_image(img.copy(), threshold=thresh)
+                
+                # Try different OCR configs
+                configs = [
+                    r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789+=?',
+                    r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789+=?',
+                ]
+                
+                for cfg in configs:
+                    try:
+                        text = pytesseract.image_to_string(processed, config=cfg)
+                        text = text.strip().replace(' ', '').replace('\n', '')
+                        # Remove leading/trailing non-digits
+                        text = re.sub(r'^[^0-9]*', '', text)
+                        text = re.sub(r'[^0-9+\-=?]*$', '', text)
+                        if text and any(c.isdigit() for c in text):
+                            results.append(text)
+                    except:
+                        continue
         
         return list(set(results))  # Remove duplicates
     
@@ -205,7 +213,7 @@ class OBSSession:
         print(f"[!] Cannot solve captcha: {captcha_text}")
         return None
     
-    def login(self, max_retries: int = 3) -> bool:
+    def login(self, max_retries: int = 5) -> bool:
         """
         Login to BTU OBS system with retry mechanism.
         Retries on captcha failure since OCR might misread.
