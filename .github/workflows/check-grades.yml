@@ -1,0 +1,54 @@
+name: BTU OBS Grade Checker
+
+on:
+  schedule:
+    # Her 7 dakikada bir çalış (*/7 = 0,7,14,21,28,35,42,49,56 dakikalarında)
+    - cron: '*/7 * * * *'
+  workflow_dispatch:  # Manuel tetikleme için
+
+jobs:
+  check-grades:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Download previous cache
+        uses: actions/cache@v4
+        with:
+          path: grades_cache.json
+          key: grades-cache-${{ github.run_id }}
+          restore-keys: |
+            grades-cache-
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+      
+      - name: Install Tesseract OCR
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr
+      
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run OBS checker
+        env:
+          OBS_USERNAME: ${{ secrets.OBS_USERNAME }}
+          OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TESSERACT_PATH: /usr/bin/tesseract
+        run: |
+          python main.py --once
