@@ -21,12 +21,86 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 import config
 
-# Try to import Gemini
+# Try to import Gemini (new SDK)
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
+
+# ... (omitted parts)
+
+    def _solve_captcha_with_gemini(self, image: Image.Image) -> Optional[str]:
+        """Solve captcha using Gemini Vision API (google-genai SDK)."""
+        if not GEMINI_AVAILABLE:
+            print("[!] Gemini API (google-genai) not available")
+            return None
+        
+        if not config.GEMINI_API_KEY:
+            print("[!] GEMINI_API_KEY not configured")
+            return None
+        
+        try:
+            # Configure Gemini Client
+            client = genai.Client(api_key=config.GEMINI_API_KEY)
+            
+            # Convert image to bytes
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='PNG')
+            img_byte_arr.seek(0)
+            
+            # Create the prompt
+            prompt = """Bu bir matematik captcha görüntüsüdür. 
+Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
+Örnek: Eğer görüntü "25+17=?" ise, sadece "42" yaz.
+Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
+
+            # Send to Gemini Vision using new SDK with retry logic
+            # User specifically requested "gemini 3 pro"
+            model_id = 'gemini-3.0-pro'
+            
+            max_gemini_retries = 3
+            response = None
+            
+            for i in range(max_gemini_retries):
+                try:
+                    response = client.models.generate_content(
+                        model=model_id,
+                        contents=[
+                            prompt,
+                            types.Part.from_bytes(
+                                data=img_byte_arr.getvalue(),
+                                mime_type="image/png"
+                            )
+                        ]
+                    )
+                    break # Success
+                except Exception as e:
+                    # Check for rate limit error (usually 429)
+                    if "429" in str(e) and i < max_gemini_retries - 1:
+                        wait_time = 10 * (i + 1)
+                        print(f"[!] Gemini Rate Limit (429). Waiting {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        raise e
+            
+            # Extract the answer
+            if response and response.text:
+                answer = response.text.strip()
+                # Clean up - only keep digits
+                answer = re.sub(r'[^0-9]', '', answer)
+                
+                if answer:
+                    print(f"[*] Gemini Vision ({model_id}) answer: {answer}")
+                    return answer
+            
+            print(f"[!] Gemini returned empty or invalid response")
+            return None
+                
+        except Exception as e:
+            print(f"[!] Gemini Vision error: {e}")
+            return None
 
 # Set Tesseract path - check environment variable first, then use OS default
 tesseract_path = os.getenv('TESSERACT_PATH')
