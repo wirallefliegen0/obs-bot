@@ -2,8 +2,8 @@ name: BTU OBS Grade Checker
 
 on:
   schedule:
-    # Her 7 dakikada bir çalış (*/7 = 0,7,14,21,28,35,42,49,56 dakikalarında)
-    - cron: '*/7 * * * *'
+    # Her 5 dakikada bir çalış (minimum)
+    - cron: '*/5 * * * *'
   workflow_dispatch:  # Manuel tetikleme için
 
 jobs:
