@@ -17,6 +17,9 @@ OBS_PASSWORD = os.getenv("OBS_PASSWORD", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Gemini API Key (for captcha solving)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
 # Check interval in minutes
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))
 

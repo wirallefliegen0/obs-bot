@@ -1,6 +1,6 @@
 """
-BTU OBS Web Scraper Module - Selenium + OCR Edition.
-Handles login and grade fetching from the OBS system using Selenium and OCR for captcha.
+BTU OBS Web Scraper Module - Selenium + Gemini Vision Edition.
+Handles login and grade fetching from the OBS system using Selenium and Gemini Vision for captcha.
 """
 
 import os
@@ -20,6 +20,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 import config
+
+# Try to import Gemini
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
 
 # Set Tesseract path - check environment variable first, then use OS default
 tesseract_path = os.getenv('TESSERACT_PATH')
@@ -72,6 +79,54 @@ class OBSSession:
         
         return image
     
+    def _solve_captcha_with_gemini(self, image: Image.Image) -> Optional[str]:
+        """Solve captcha using Gemini Vision API."""
+        if not GEMINI_AVAILABLE:
+            print("[!] Gemini API not available")
+            return None
+        
+        if not config.GEMINI_API_KEY:
+            print("[!] GEMINI_API_KEY not configured")
+            return None
+        
+        try:
+            # Configure Gemini
+            genai.configure(api_key=config.GEMINI_API_KEY)
+            model = genai.GenerativeModel('gemini-2.0-flash')
+            
+            # Convert image to bytes
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='PNG')
+            img_byte_arr.seek(0)
+            
+            # Create the prompt
+            prompt = """Bu bir matematik captcha görüntüsüdür. 
+Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
+Örnek: Eğer görüntü "25+17=?" ise, sadece "42" yaz.
+Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
+
+            # Send to Gemini Vision
+            response = model.generate_content([
+                prompt,
+                {"mime_type": "image/png", "data": img_byte_arr.read()}
+            ])
+            
+            # Extract the answer
+            answer = response.text.strip()
+            # Clean up - only keep digits
+            answer = re.sub(r'[^0-9]', '', answer)
+            
+            if answer:
+                print(f"[*] Gemini Vision answer: {answer}")
+                return answer
+            else:
+                print(f"[!] Gemini returned empty or invalid: {response.text}")
+                return None
+                
+        except Exception as e:
+            print(f"[!] Gemini Vision error: {e}")
+            return None
+    
     def _try_multiple_ocr_approaches(self, original_image: Image.Image) -> list[str]:
         """Try multiple preprocessing approaches and return all results."""
         results = []
@@ -110,8 +165,8 @@ class OBSSession:
         
         return list(set(results))  # Remove duplicates
     
-    def _extract_captcha_with_ocr(self) -> Optional[str]:
-        """Extract captcha text using OCR on the captcha image."""
+    def _get_captcha_answer(self) -> Optional[str]:
+        """Get captcha answer using Gemini Vision (preferred) or OCR fallback."""
         try:
             # Find the captcha image element
             captcha_img = self.driver.find_element(By.ID, "imgCaptchaImg")
@@ -129,7 +184,16 @@ class OBSSession:
             # Save original for debugging
             image.save("captcha_original.png")
             
-            # Try multiple preprocessing approaches
+            # Try Gemini Vision first (most accurate)
+            if config.GEMINI_API_KEY and GEMINI_AVAILABLE:
+                print("[*] Trying Gemini Vision for captcha...")
+                answer = self._solve_captcha_with_gemini(image)
+                if answer:
+                    return answer
+                print("[!] Gemini Vision failed, falling back to OCR...")
+            
+            # Fallback to OCR
+            print("[*] Using OCR for captcha...")
             results = self._try_multiple_ocr_approaches(image)
             
             print(f"[*] OCR found {len(results)} different readings: {results}")
@@ -137,15 +201,12 @@ class OBSSession:
             # Score each result based on how "captcha-like" it is
             def score_result(text):
                 score = 0
-                # Has operator
                 if '+' in text:
                     score += 10
-                # Has two reasonable numbers (2-digit each)
                 nums = re.findall(r'\d+', text)
                 if len(nums) >= 2:
                     if all(1 <= int(n) < 100 for n in nums[:2]):
                         score += 5
-                # Total digits is reasonable (2-4)
                 digit_count = len(re.findall(r'\d', text))
                 if 2 <= digit_count <= 4:
                     score += 3
@@ -154,12 +215,13 @@ class OBSSession:
             if results:
                 best = max(results, key=score_result)
                 print(f"[*] Best OCR result: '{best}' (score: {score_result(best)})")
-                return best
+                # Solve the math from OCR result
+                return self.solve_math_captcha(best)
             
             return None
             
         except Exception as e:
-            print(f"[!] Error extracting captcha with OCR: {e}")
+            print(f"[!] Error getting captcha answer: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -213,7 +275,7 @@ class OBSSession:
         print(f"[!] Cannot solve captcha: {captcha_text}")
         return None
     
-    def login(self, max_retries: int = 5) -> bool:
+    def login(self, max_retries: int = 2) -> bool:
         """
         Login to BTU OBS system with retry mechanism.
         Retries on captcha failure since OCR might misread.
@@ -266,26 +328,21 @@ class OBSSession:
             password_field.clear()
             password_field.send_keys(config.OBS_PASSWORD)
             
-            # Extract and solve captcha using OCR
+            # Get captcha answer (tries Gemini first, then OCR)
             time.sleep(1)
-            print("[*] Reading captcha with OCR...")
-            captcha_text = self._extract_captcha_with_ocr()
+            print("[*] Solving captcha...")
+            captcha_answer = self._get_captcha_answer()
             
-            if captcha_text:
-                captcha_answer = self.solve_math_captcha(captcha_text)
-                if captcha_answer:
-                    print(f"[*] Entering captcha answer: {captcha_answer}")
-                    captcha_field = WebDriverWait(self.driver, 10).until(
-                        EC.element_to_be_clickable((By.ID, "txtSecCode"))
-                    )
-                    captcha_field.click()
-                    captcha_field.clear()
-                    captcha_field.send_keys(captcha_answer)
-                else:
-                    print("[!] Failed to solve captcha math")
-                    return False
+            if captcha_answer:
+                print(f"[*] Entering captcha answer: {captcha_answer}")
+                captcha_field = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.ID, "txtSecCode"))
+                )
+                captcha_field.click()
+                captcha_field.clear()
+                captcha_field.send_keys(captcha_answer)
             else:
-                print("[!] Failed to read captcha with OCR")
+                print("[!] Failed to solve captcha")
                 return False
             
             # Click login button
