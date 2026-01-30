@@ -92,7 +92,8 @@ class OBSSession:
         try:
             # Configure Gemini
             genai.configure(api_key=config.GEMINI_API_KEY)
-            model = genai.GenerativeModel('gemini-2.0-flash')
+            # Use 1.5-flash which is stable and fast
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
             # Convert image to bytes
             img_byte_arr = io.BytesIO()
@@ -105,11 +106,24 @@ Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
 Örnek: Eğer görüntü "25+17=?" ise, sadece "42" yaz.
 Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
 
-            # Send to Gemini Vision
-            response = model.generate_content([
-                prompt,
-                {"mime_type": "image/png", "data": img_byte_arr.read()}
-            ])
+            # Send to Gemini Vision with retry logic for 429 errors
+            max_gemini_retries = 3
+            for i in range(max_gemini_retries):
+                try:
+                    response = model.generate_content([
+                        prompt,
+                        {"mime_type": "image/png", "data": img_byte_arr.read()}
+                    ])
+                    break
+                except Exception as e:
+                    if "429" in str(e) and i < max_gemini_retries - 1:
+                        wait_time = 10 * (i + 1)
+                        print(f"[!] Gemini 429 Rate Limit. Waiting {wait_time}s...")
+                        time.sleep(wait_time)
+                        # Rewind image stream for retry
+                        img_byte_arr.seek(0)
+                    else:
+                        raise e
             
             # Extract the answer
             answer = response.text.strip()
