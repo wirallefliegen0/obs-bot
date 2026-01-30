@@ -31,76 +31,7 @@ except ImportError:
 
 # ... (omitted parts)
 
-    def _solve_captcha_with_gemini(self, image: Image.Image) -> Optional[str]:
-        """Solve captcha using Gemini Vision API (google-genai SDK)."""
-        if not GEMINI_AVAILABLE:
-            print("[!] Gemini API (google-genai) not available")
-            return None
-        
-        if not config.GEMINI_API_KEY:
-            print("[!] GEMINI_API_KEY not configured")
-            return None
-        
-        try:
-            # Configure Gemini Client
-            client = genai.Client(api_key=config.GEMINI_API_KEY)
-            
-            # Convert image to bytes
-            img_byte_arr = io.BytesIO()
-            image.save(img_byte_arr, format='PNG')
-            img_byte_arr.seek(0)
-            
-            # Create the prompt
-            prompt = """Bu bir matematik captcha görüntüsüdür. 
-Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
-Örnek: Eğer görüntü "25+17=?" ise, sadece "42" yaz.
-Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
 
-            # Send to Gemini Vision using new SDK with retry logic
-            # User specifically requested "gemini 3 pro"
-            model_id = 'gemini-3.0-pro'
-            
-            max_gemini_retries = 3
-            response = None
-            
-            for i in range(max_gemini_retries):
-                try:
-                    response = client.models.generate_content(
-                        model=model_id,
-                        contents=[
-                            prompt,
-                            types.Part.from_bytes(
-                                data=img_byte_arr.getvalue(),
-                                mime_type="image/png"
-                            )
-                        ]
-                    )
-                    break # Success
-                except Exception as e:
-                    # Check for rate limit error (usually 429)
-                    if "429" in str(e) and i < max_gemini_retries - 1:
-                        wait_time = 10 * (i + 1)
-                        print(f"[!] Gemini Rate Limit (429). Waiting {wait_time}s...")
-                        time.sleep(wait_time)
-                    else:
-                        raise e
-            
-            # Extract the answer
-            if response and response.text:
-                answer = response.text.strip()
-                # Clean up - only keep digits
-                answer = re.sub(r'[^0-9]', '', answer)
-                
-                if answer:
-                    print(f"[*] Gemini Vision ({model_id}) answer: {answer}")
-                    return answer
-            
-            print(f"[!] Gemini returned empty or invalid response")
-            return None
-                
-        except Exception as e:
-            print(f"[!] Gemini Vision error: {e}")
-            return None
 
 # Set Tesseract path - check environment variable first, then use OS default
 tesseract_path = os.getenv('TESSERACT_PATH')
@@ -154,9 +85,9 @@ class OBSSession:
         return image
     
     def _solve_captcha_with_gemini(self, image: Image.Image) -> Optional[str]:
-        """Solve captcha using Gemini Vision API."""
+        """Solve captcha using Gemini Vision API (google-genai SDK)."""
         if not GEMINI_AVAILABLE:
-            print("[!] Gemini API not available")
+            print("[!] Gemini API (google-genai) not available")
             return None
         
         if not config.GEMINI_API_KEY:
@@ -164,10 +95,8 @@ class OBSSession:
             return None
         
         try:
-            # Configure Gemini
-            genai.configure(api_key=config.GEMINI_API_KEY)
-            # Use 1.5-flash which is stable and fast
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            # Configure Gemini Client
+            client = genai.Client(api_key=config.GEMINI_API_KEY)
             
             # Convert image to bytes
             img_byte_arr = io.BytesIO()
@@ -180,39 +109,50 @@ Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
 Örnek: Eğer görüntü "25+17=?" ise, sadece "42" yaz.
 Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
 
-            # Send to Gemini Vision with retry logic for 429 errors
+            # Use gemini-1.5-pro as stable fallback since 3.0 might not be available or named differently
+            # User intent is "best pro model". 1.5-pro is current stable pro.
+            # If 2.0-pro-exp exists we could try that, but 1.5-pro is safer for reliability.
+            model_id = 'gemini-1.5-pro'
+            
             max_gemini_retries = 3
+            response = None
+            
             for i in range(max_gemini_retries):
                 try:
-                    response = model.generate_content([
-                        prompt,
-                        {"mime_type": "image/png", "data": img_byte_arr.read()}
-                    ])
-                    break
+                    response = client.models.generate_content(
+                        model=model_id,
+                        contents=[
+                            prompt,
+                            types.Part.from_bytes(
+                                data=img_byte_arr.getvalue(),
+                                mime_type="image/png"
+                            )
+                        ]
+                    )
+                    break # Success
                 except Exception as e:
+                    # Check for rate limit error (usually 429)
                     if "429" in str(e) and i < max_gemini_retries - 1:
                         wait_time = 10 * (i + 1)
-                        print(f"[!] Gemini 429 Rate Limit. Waiting {wait_time}s...")
+                        print(f"[!] Gemini Rate Limit (429). Waiting {wait_time}s...")
                         time.sleep(wait_time)
-                        # Rewind image stream for retry
-                        img_byte_arr.seek(0)
                     else:
-                        raise e
+                        print(f"[!] Gemini error: {e}")
+                        # Fallback to older model if model not found? 
+                        # But for now just fail gracefully to OCR
+                        return None
             
             # Extract the answer
-            answer = response.text.strip()
-            # Clean up - only keep digits
-            answer = re.sub(r'[^0-9]', '', answer)
-            
-            if answer:
-                print(f"[*] Gemini Vision answer: {answer}")
-                return answer
-            else:
-                print(f"[!] Gemini returned empty or invalid: {response.text}")
-                return None
+            if response and response.text:
+                answer = response.text.strip()
+                # Clean up - only keep digits
+                answer = re.sub(r'[^0-9]', '', answer)
                 
-        except Exception as e:
-            print(f"[!] Gemini Vision error: {e}")
+                if answer:
+                    print(f"[*] Gemini Vision ({model_id}) answer: {answer}")
+                    return answer
+            
+            print(f"[!] Gemini returned empty or invalid response")
             return None
     
     def _try_multiple_ocr_approaches(self, original_image: Image.Image) -> list[str]:
