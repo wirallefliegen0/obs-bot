@@ -58,20 +58,49 @@ class OBSSession:
         self.driver = webdriver.Chrome(service=service, options=options)
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
-    def _preprocess_captcha_image(self, image: Image.Image) -> Image.Image:
+    def _preprocess_captcha_image(self, image: Image.Image, threshold: int = 128) -> Image.Image:
         """Preprocess captcha image for better OCR results."""
         # Convert to grayscale
         image = image.convert('L')
         
-        # Resize for better OCR
+        # Resize for better OCR (larger = more detail)
         width, height = image.size
-        image = image.resize((width * 3, height * 3), Image.Resampling.LANCZOS)
+        image = image.resize((width * 4, height * 4), Image.Resampling.LANCZOS)
         
-        # Increase contrast by thresholding
-        threshold = 128
+        # Apply threshold
         image = image.point(lambda p: 255 if p > threshold else 0)
         
         return image
+    
+    def _try_multiple_ocr_approaches(self, original_image: Image.Image) -> list[str]:
+        """Try multiple preprocessing approaches and return all results."""
+        results = []
+        
+        # Try different thresholds
+        thresholds = [100, 128, 150, 180]
+        
+        for thresh in thresholds:
+            processed = self._preprocess_captcha_image(original_image.copy(), threshold=thresh)
+            
+            # Try different OCR configs
+            configs = [
+                r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789+=?',
+                r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789+=?',
+            ]
+            
+            for cfg in configs:
+                try:
+                    text = pytesseract.image_to_string(processed, config=cfg)
+                    text = text.strip().replace(' ', '').replace('\n', '')
+                    # Remove leading/trailing non-digits
+                    text = re.sub(r'^[^0-9]*', '', text)
+                    text = re.sub(r'[^0-9+\-=?]*$', '', text)
+                    if text and any(c.isdigit() for c in text):
+                        results.append(text)
+                except:
+                    continue
+        
+        return list(set(results))  # Remove duplicates
     
     def _extract_captcha_with_ocr(self) -> Optional[str]:
         """Extract captcha text using OCR on the captcha image."""
@@ -93,40 +122,30 @@ class OBSSession:
             image.save("captcha_original.png")
             
             # Try multiple preprocessing approaches
-            results = []
+            results = self._try_multiple_ocr_approaches(image)
             
-            # Approach 1: Standard preprocessing
-            processed = self._preprocess_captcha_image(image)
-            processed.save("captcha_processed.png")
+            print(f"[*] OCR found {len(results)} different readings: {results}")
             
-            # Try different OCR configs
-            configs = [
-                r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789+-x*=?',
-                r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789+-x*=?',
-                r'--oem 3 --psm 6',
-                r'--oem 3 --psm 7',
-            ]
+            # Score each result based on how "captcha-like" it is
+            def score_result(text):
+                score = 0
+                # Has operator
+                if '+' in text:
+                    score += 10
+                # Has two reasonable numbers (2-digit each)
+                nums = re.findall(r'\d+', text)
+                if len(nums) >= 2:
+                    if all(1 <= int(n) < 100 for n in nums[:2]):
+                        score += 5
+                # Total digits is reasonable (2-4)
+                digit_count = len(re.findall(r'\d', text))
+                if 2 <= digit_count <= 4:
+                    score += 3
+                return score
             
-            for cfg in configs:
-                try:
-                    text = pytesseract.image_to_string(processed, config=cfg)
-                    text = text.strip().replace(' ', '').replace('\n', '')
-                    if text:
-                        results.append(text)
-                        print(f"[*] OCR config '{cfg[:20]}...' extracted: '{text}'")
-                except:
-                    continue
-            
-            # Find the best result (one with operator, or longest)
-            for result in results:
-                if '+' in result or '-' in result or '*' in result or 'x' in result:
-                    print(f"[*] Best OCR result (has operator): '{result}'")
-                    return result
-            
-            # If no operator found, return the result with most digits
             if results:
-                best = max(results, key=lambda x: len(re.findall(r'\d', x)))
-                print(f"[*] Best OCR result (most digits): '{best}'")
+                best = max(results, key=score_result)
+                print(f"[*] Best OCR result: '{best}' (score: {score_result(best)})")
                 return best
             
             return None
