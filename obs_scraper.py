@@ -111,7 +111,10 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
 
             # Try multiple models in order of preference/availability
             models_to_try = [
+                'gemini-3.0-pro',        # User requested specific model
+                'gemini-3.0-pro-exp',    # Experimental variant
                 'gemini-2.0-flash',      # Latest flash model (fast & capable)
+                'gemini-2.0-pro-exp',    # Next gen pro
                 'gemini-1.5-pro',        # Stable pro model
                 'gemini-1.5-flash',      # Stable flash model
                 'gemini-pro-vision',     # Legacy vision model
