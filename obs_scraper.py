@@ -110,23 +110,22 @@ Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
 Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
 
             # Try multiple models in order of preference/availability
+            # Updated model names based on current Gemini API
             models_to_try = [
-                'gemini-3.0-pro',        # User requested specific model
-                'gemini-3.0-pro-exp', 
-                'gemini-3.0-flash',      # Experimental variant
-                'gemini-2.0-flash',      # Latest flash model (fast & capable)
-                'gemini-2.0-pro-exp',    # Next gen pro
-                'gemini-1.5-pro',        # Stable pro model
-                'gemini-1.5-flash',      # Stable flash model
-                'gemini-pro-vision',     # Legacy vision model
+                'gemini-2.0-flash',       # Latest and fastest
+                'gemini-2.0-flash-exp',   # Experimental variant
+                'gemini-1.5-flash',       # Stable flash model
+                'gemini-1.5-pro',         # Stable pro model (more capable)
+                'gemini-pro-vision',      # Legacy vision model
             ]
             
             response = None
             used_model = None
+            last_error = None
             
             for model_id in models_to_try:
                 try:
-                    # print(f"[*] Trying Gemini model: {model_id}") # Optional debug
+                    print(f"[*] Trying Gemini model: {model_id}")
                     
                     max_gemini_retries = 2
                     for i in range(max_gemini_retries):
@@ -144,9 +143,11 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                             used_model = model_id
                             break # Success for this model
                         except Exception as e:
+                            last_error = str(e)
                             # Rate limit handling
                             if "429" in str(e) and i < max_gemini_retries - 1:
                                 wait_time = 5 * (i + 1)
+                                print(f"[*] Rate limited, waiting {wait_time}s...")
                                 time.sleep(wait_time)
                                 img_byte_arr.seek(0)
                             else:
@@ -156,14 +157,21 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                         break # Found a working model and got response
                         
                 except Exception as e:
-                    # If 404 (model not found) or other error, try next model
-                    if "404" in str(e):
-                        continue
-                    # print(f"[!] Error with model {model_id}: {e}")
+                    last_error = str(e)
+                    error_str = str(e).lower()
+                    # Log the actual error for debugging
+                    if "404" in error_str or "not found" in error_str:
+                        print(f"[!] Model {model_id}: Not found")
+                    elif "403" in error_str or "permission" in error_str:
+                        print(f"[!] Model {model_id}: Permission denied")
+                    elif "invalid" in error_str:
+                        print(f"[!] Model {model_id}: Invalid request - {str(e)[:100]}")
+                    else:
+                        print(f"[!] Model {model_id}: Error - {str(e)[:100]}")
                     continue
             
             if not response:
-                print("[!] All Gemini models failed or not found")
+                print(f"[!] All Gemini models failed. Last error: {last_error[:200] if last_error else 'Unknown'}")
                 return None
             
             # Extract the answer
