@@ -2,7 +2,7 @@
 BTU OBS Web Scraper Module - Selenium + Gemini Vision Edition.
 Handles login and grade fetching from the OBS system using Selenium and Gemini Vision for captcha.
 """
-
+"""
 import os
 import re
 import time
@@ -151,7 +151,7 @@ class OBSSession:
             img_byte_arr.seek(0)
             
             # Create the prompt
-            prompt = """Bu bir matematik captcha görüntüsüdür. 
+            prompt = """Bu bir matematik captcha görüntüsüdür. """
 Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
 Örnek: Eğer görüntü "25+17=?" ise, sadece "42" yaz.
 Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
