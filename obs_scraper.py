@@ -17,7 +17,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, UnexpectedAlertPresentException, NoAlertPresentException
 from webdriver_manager.chrome import ChromeDriverManager
 import config
 
@@ -70,17 +70,64 @@ class OBSSession:
         self.driver = webdriver.Chrome(service=service, options=options)
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
-    def _preprocess_captcha_image(self, image: Image.Image, threshold: int = 128) -> Image.Image:
-        """Preprocess captcha image for better OCR results."""
+    def _dismiss_alerts(self, accept: bool = True) -> bool:
+        """
+        Dismiss any native browser alerts/confirms/prompts.
+        
+        Args:
+            accept: If True, click OK/Accept. If False, click Cancel/Dismiss.
+        
+        Returns:
+            True if an alert was handled, False otherwise.
+        """
+        handled = False
+        max_attempts = 5  # Handle multiple stacked alerts
+        for _ in range(max_attempts):
+            try:
+                alert = self.driver.switch_to.alert
+                alert_text = alert.text
+                print(f"[*] Found browser alert: '{alert_text}'")
+                if accept:
+                    alert.accept()
+                    print("[*] Alert accepted (OK clicked)")
+                else:
+                    alert.dismiss()
+                    print("[*] Alert dismissed (Cancel clicked)")
+                handled = True
+                time.sleep(0.5)
+            except NoAlertPresentException:
+                break
+            except Exception as e:
+                print(f"[!] Error handling alert: {e}")
+                break
+        return handled
+    
+    def _preprocess_captcha_image(self, image: Image.Image, threshold: int = 128, aggressive: bool = False) -> Image.Image:
+        """
+        Preprocess captcha image for better OCR results.
+        BTU OBS captcha has noisy colorful dots that need to be removed.
+        """
+        from PIL import ImageFilter
+        
         # Convert to grayscale
         image = image.convert('L')
+        
+        # Apply median filter to reduce noise (dots)
+        if aggressive:
+            image = image.filter(ImageFilter.MedianFilter(size=3))
         
         # Resize for better OCR (larger = more detail)
         width, height = image.size
         image = image.resize((width * 4, height * 4), Image.Resampling.LANCZOS)
         
-        # Apply threshold
+        # Apply threshold to binarize
         image = image.point(lambda p: 255 if p > threshold else 0)
+        
+        # Additional cleanup for aggressive mode
+        if aggressive:
+            # Erode then dilate to remove small dots
+            image = image.filter(ImageFilter.MaxFilter(size=3))
+            image = image.filter(ImageFilter.MinFilter(size=3))
         
         return image
     
@@ -110,13 +157,17 @@ Görüntüdeki matematik işlemini çöz ve SADECE sayısal cevabı ver.
 Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
 
             # Try multiple models in order of preference/availability
-            # Updated model names based on current Gemini API
+            # Updated model names based on current Gemini API (2025)
             models_to_try = [
-                'gemini-2.0-flash',       # Latest and fastest
-                'gemini-2.0-flash-exp',   # Experimental variant
-                'gemini-1.5-flash',       # Stable flash model
-                'gemini-1.5-pro',         # Stable pro model (more capable)
-                'gemini-pro-vision',      # Legacy vision model
+                'gemini-2.0-flash',           # Latest stable flash
+                'gemini-2.0-flash-exp',       # Experimental flash variant
+                'gemini-1.5-flash',           # Stable flash (widely available)
+                'gemini-1.5-flash-latest',    # Latest 1.5 flash
+                'gemini-1.5-pro',             # Stable pro (more capable)
+                'gemini-1.5-pro-latest',      # Latest 1.5 pro
+                'gemini-pro',                 # Base pro model
+                'models/gemini-1.5-flash',    # Full model path format
+                'models/gemini-1.5-pro',      # Full model path format
             ]
             
             response = None
@@ -195,37 +246,70 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
         """Try multiple preprocessing approaches and return all results."""
         results = []
         
-        # Try different thresholds and also inverted image
-        thresholds = [100, 128, 150, 180]
+        # Try different thresholds
+        thresholds = [90, 110, 128, 150, 180]
         
+        # Prepare different image variants to try
         images_to_try = [original_image]
+        
+        # Color-based filtering: BTU captcha has colored dots as noise
+        # The text is usually dark on lighter background
+        # Try extracting just the darkest parts
+        try:
+            rgb_img = original_image.convert('RGB')
+            # Create mask for pixels that are predominantly dark (text)
+            # Filter out colorful noise by checking if pixel is more grayscale
+            def is_text_pixel(r, g, b):
+                # Text tends to be dark and grayscale
+                brightness = (r + g + b) / 3
+                color_variance = max(abs(r - brightness), abs(g - brightness), abs(b - brightness))
+                # Accept dark pixels with low color variance (grayscale-ish)
+                return brightness < 120 and color_variance < 50
+            
+            width, height = rgb_img.size
+            filtered = Image.new('L', (width, height), 255)
+            filtered_pixels = filtered.load()
+            rgb_pixels = rgb_img.load()
+            for y in range(height):
+                for x in range(width):
+                    r, g, b = rgb_pixels[x, y]
+                    if is_text_pixel(r, g, b):
+                        filtered_pixels[x, y] = 0
+            images_to_try.append(filtered.convert('RGB'))
+        except Exception as e:
+            pass
         
         # Also try inverted image
         inverted = original_image.copy().convert('L')
         inverted = Image.eval(inverted, lambda x: 255 - x)
         images_to_try.append(inverted.convert('RGB'))
         
+        # Try aggressive modes: with and without noise removal
+        aggressive_modes = [False, True]
+        
         for img in images_to_try:
             for thresh in thresholds:
-                processed = self._preprocess_captcha_image(img.copy(), threshold=thresh)
-                
-                # Try different OCR configs
-                configs = [
-                    r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789+=?',
-                    r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789+=?',
-                ]
-                
-                for cfg in configs:
-                    try:
-                        text = pytesseract.image_to_string(processed, config=cfg)
-                        text = text.strip().replace(' ', '').replace('\n', '')
-                        # Remove leading/trailing non-digits
-                        text = re.sub(r'^[^0-9]*', '', text)
-                        text = re.sub(r'[^0-9+\-=?]*$', '', text)
-                        if text and any(c.isdigit() for c in text):
-                            results.append(text)
-                    except:
-                        continue
+                for aggressive in aggressive_modes:
+                    processed = self._preprocess_captcha_image(img.copy(), threshold=thresh, aggressive=aggressive)
+                    
+                    # Try different OCR configs
+                    configs = [
+                        r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789+=?',
+                        r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789+=?',
+                        r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789+=?',
+                    ]
+                    
+                    for cfg in configs:
+                        try:
+                            text = pytesseract.image_to_string(processed, config=cfg)
+                            text = text.strip().replace(' ', '').replace('\n', '')
+                            # Remove leading/trailing non-digits
+                            text = re.sub(r'^[^0-9]*', '', text)
+                            text = re.sub(r'[^0-9+\-=?]*$', '', text)
+                            if text and any(c.isdigit() for c in text):
+                                results.append(text)
+                        except:
+                            continue
         
         return list(set(results))  # Remove duplicates
     
@@ -263,22 +347,61 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             print(f"[*] OCR found {len(results)} different readings: {results}")
             
             # Score each result based on how "captcha-like" it is
+            # BTU OBS captcha format: NN+MM=? (e.g., 61+8=?)
             def score_result(text):
                 score = 0
+                
+                # Best format: has + sign
                 if '+' in text:
+                    score += 15
+                elif '-' in text:
+                    score += 12
+                
+                # Bonus for having =? at end
+                if '=?' in text:
                     score += 10
+                elif '=' in text:
+                    score += 5
+                
+                # Extract numbers
                 nums = re.findall(r'\d+', text)
                 if len(nums) >= 2:
-                    if all(1 <= int(n) < 100 for n in nums[:2]):
-                        score += 5
-                digit_count = len(re.findall(r'\d', text))
-                if 2 <= digit_count <= 4:
-                    score += 3
+                    try:
+                        # Typical captcha uses small-ish numbers
+                        if all(1 <= int(n) < 200 for n in nums[:2]):
+                            score += 8
+                        # Prefer if first number is 2 digits (like 61, 38, etc.)
+                        if len(nums[0]) >= 2:
+                            score += 3
+                    except ValueError:
+                        pass
+                
+                # Penalize if only 1 number found
+                if len(nums) < 2:
+                    score -= 10
+                
+                # Penalize very long results (probably junk)
+                if len(text) > 12:
+                    score -= 5
+                
+                # Penalize very short results
+                if len(text) < 4:
+                    score -= 5
+                
                 return score
             
             if results:
-                best = max(results, key=score_result)
-                print(f"[*] Best OCR result: '{best}' (score: {score_result(best)})")
+                # Sort results by score (descending)
+                scored_results = [(r, score_result(r)) for r in results]
+                scored_results.sort(key=lambda x: -x[1])
+                
+                # Display top candidates
+                print("[*] Top OCR candidates:")
+                for r, s in scored_results[:5]:
+                    print(f"    '{r}' (score: {s})")
+                
+                best = scored_results[0][0]
+                print(f"[*] Selected best: '{best}' (score: {scored_results[0][1]})")
                 # Solve the math from OCR result
                 return self.solve_math_captcha(best)
             
@@ -488,46 +611,87 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             except:
                 pass
             
-            # Check if we're already on the grades page (index.aspx with curOp=0)
-            # If yes, don't navigate anywhere - that would break the session!
-            already_on_grades = 'index.aspx' in current_url.lower() and 'curop=0' in current_url.lower()
+            # We need to navigate to 'Not Listesi' through the sidebar menu
+            # Path: Ders ve Dönem İşlemleri -> Not Listesi
+            print("[*] Navigating to 'Not Listesi' via menu...")
             
-            if already_on_grades:
-                print("[*] Already on grades page after login! No navigation needed.")
-            else:
-                # Not on grades page, need to navigate
-                print("[*] Not on grades page, looking for 'Not Listesi' menu item...")
-                
-                # Try to find and click the "Not Listesi" menu
-                menu_clicked = False
-                
-                # Method 1: Find by text content
-                menu_xpaths = [
-                    "//a[contains(text(), 'Not Listesi')]",
-                    "//span[contains(text(), 'Not Listesi')]/..",
-                    "//td[contains(text(), 'Not Listesi')]",
-                    "//*[contains(text(), 'Not Listesi')]",
-                    "//a[contains(@href, 'curOp=0')]",
-                    "//a[contains(@title, 'Not')]",
-                ]
-                
-                for xpath in menu_xpaths:
-                    try:
-                        elements = self.driver.find_elements(By.XPATH, xpath)
-                        for elem in elements:
-                            if elem.is_displayed():
-                                print(f"[*] Found menu item with xpath: {xpath}")
+            # Step 1: First click on "Ders ve Dönem İşlemleri" to expand submenu
+            parent_menu_clicked = False
+            parent_menu_xpaths = [
+                "//a[contains(text(), 'Ders ve Dönem')]",
+                "//span[contains(text(), 'Ders ve Dönem')]",
+                "//*[contains(text(), 'Ders ve Dönem İşlemleri')]",
+                "//td[contains(text(), 'Ders ve Dönem')]",
+                "//div[contains(text(), 'Ders ve Dönem')]",
+            ]
+            
+            for xpath in parent_menu_xpaths:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, xpath)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            print(f"[*] Found 'Ders ve Dönem İşlemleri' menu: {xpath}")
+                            elem.click()
+                            parent_menu_clicked = True
+                            time.sleep(2)  # Wait for submenu to expand
+                            break
+                except Exception as e:
+                    continue
+                if parent_menu_clicked:
+                    break
+            
+            if not parent_menu_clicked:
+                print("[!] Could not find 'Ders ve Dönem İşlemleri' menu")
+            
+            # Step 2: Now click on "Not Listesi" submenu
+            menu_clicked = False
+            submenu_xpaths = [
+                "//a[contains(text(), 'Not Listesi')]",
+                "//span[contains(text(), 'Not Listesi')]",
+                "//*[contains(text(), 'Not Listesi')]",
+                "//td[contains(text(), 'Not Listesi')]",
+                "//a[contains(@href, 'Not')]",
+                "//a[contains(@title, 'Not Listesi')]",
+            ]
+            
+            for xpath in submenu_xpaths:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, xpath)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            elem_text = elem.text.strip().lower()
+                            # Make sure it's specifically "Not Listesi" and not just contains "Not"
+                            if 'not listesi' in elem_text or 'not list' in elem_text:
+                                print(f"[*] Found 'Not Listesi' submenu: {xpath}")
                                 elem.click()
                                 menu_clicked = True
-                                time.sleep(3)
+                                time.sleep(3)  # Wait for grades page to load
                                 break
-                    except Exception as e:
-                        continue
-                    if menu_clicked:
-                        break
-                
-                if not menu_clicked:
-                    print("[!] Could not find 'Not Listesi' menu - staying on current page")
+                except Exception as e:
+                    continue
+                if menu_clicked:
+                    break
+            
+            if not menu_clicked:
+                print("[!] Could not find 'Not Listesi' submenu - trying direct click on any 'Not' link...")
+                # Last resort: click any link with "Not" in text
+                try:
+                    all_links = self.driver.find_elements(By.TAG_NAME, "a")
+                    for link in all_links:
+                        link_text = link.text.strip().lower()
+                        if 'not listesi' in link_text:
+                            print(f"[*] Found link: '{link.text}'")
+                            link.click()
+                            menu_clicked = True
+                            time.sleep(3)
+                            break
+                except:
+                    pass
+            
+            if menu_clicked:
+                print("[*] Navigated to 'Not Listesi' page!")
+            else:
+                print("[!] Could not navigate to 'Not Listesi'")
             
             # Wait for page to load
             print("[*] Waiting for page content to load...")
@@ -536,6 +700,12 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             # CRITICAL: Close any popup/modal that appears on the page
             # The grades page shows a "Notlar" info popup that blocks the table
             print("[*] Checking for popups/modals to close...")
+            
+            # FIRST: Handle any native browser alerts that might be present
+            # These alerts block all Selenium interactions and must be dismissed first
+            if self._dismiss_alerts(accept=True):
+                print("[*] Dismissed initial browser alert(s)")
+                time.sleep(1)
             
             popup_closed = False
             close_button_xpaths = [
@@ -567,17 +737,31 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                             try:
                                 btn.click()
                                 popup_closed = True
-                                time.sleep(1)
+                                time.sleep(0.5)
+                                # Handle any confirmation alert that appears after clicking
+                                self._dismiss_alerts(accept=True)
                                 print("[*] Clicked close button!")
+                            except UnexpectedAlertPresentException:
+                                # Alert appeared - handle it and continue
+                                self._dismiss_alerts(accept=True)
+                                popup_closed = True
+                                print("[*] Handled alert after button click!")
                             except:
                                 # Try JavaScript click
                                 try:
                                     self.driver.execute_script("arguments[0].click();", btn)
                                     popup_closed = True
-                                    time.sleep(1)
+                                    time.sleep(0.5)
+                                    self._dismiss_alerts(accept=True)
                                     print("[*] Clicked close button via JS!")
+                                except UnexpectedAlertPresentException:
+                                    self._dismiss_alerts(accept=True)
+                                    popup_closed = True
                                 except:
                                     pass
+                except UnexpectedAlertPresentException:
+                    self._dismiss_alerts(accept=True)
+                    continue
                 except:
                     continue
             
@@ -585,9 +769,13 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             try:
                 from selenium.webdriver.common.keys import Keys
                 self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                time.sleep(1)
+                time.sleep(0.5)
+                self._dismiss_alerts(accept=True)
             except:
                 pass
+            
+            # Final check for any remaining alerts
+            self._dismiss_alerts(accept=True)
             
             if popup_closed:
                 print("[*] Popup closed, waiting for table to be visible...")
@@ -596,36 +784,101 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             # Wait longer for AJAX/dynamic content to load
             time.sleep(2)
             
-            # Check for iframes - OBS might load content in an iframe
+            # Check for iframes - OBS loads content in IFRAME1
             iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
             print(f"[*] Found {len(iframes)} iframe(s) on page")
             
+            switched_to_iframe = False
             if iframes:
-                for idx, iframe in enumerate(iframes):
-                    try:
-                        iframe_id = iframe.get_attribute("id") or "no-id"
-                        iframe_src = iframe.get_attribute("src") or "no-src"
-                        print(f"[*] Iframe {idx+1}: id='{iframe_id}' src='{iframe_src[:50]}'")
-                        
-                        # Try switching to iframe that might contain grades
-                        if 'not' in iframe_src.lower() or 'ders' in iframe_src.lower() or iframe_src == 'no-src':
-                            print(f"[*] Switching to iframe {idx+1}...")
-                            self.driver.switch_to.frame(iframe)
-                            time.sleep(2)
-                            # Check if this iframe has the grades
-                            iframe_tables = self.driver.find_elements(By.TAG_NAME, "table")
-                            if len(iframe_tables) > 1:
-                                print(f"[*] Found {len(iframe_tables)} tables in iframe!")
-                                break
-                            else:
-                                # Switch back and try next iframe
-                                self.driver.switch_to.default_content()
-                    except Exception as e:
-                        print(f"[!] Error with iframe: {e}")
+                # First, try to find and switch to IFRAME1 specifically (main content frame)
+                for iframe in iframes:
+                    iframe_id = iframe.get_attribute("id") or "no-id"
+                    iframe_src = iframe.get_attribute("src") or "no-src"
+                    print(f"[*] Iframe: id='{iframe_id}' src='{iframe_src[:80] if iframe_src else 'no-src'}'")
+                    
+                    # IFRAME1 is the main content frame with the grades
+                    if iframe_id == "IFRAME1":
                         try:
-                            self.driver.switch_to.default_content()
-                        except:
-                            pass
+                            print(f"[*] Switching to main content iframe (IFRAME1)...")
+                            self.driver.switch_to.frame(iframe)
+                            switched_to_iframe = True
+                            time.sleep(2)
+                            
+                            # Verify we're in the right frame by checking for tables
+                            iframe_tables = self.driver.find_elements(By.TAG_NAME, "table")
+                            print(f"[*] Found {len(iframe_tables)} tables in IFRAME1")
+                            
+                            # Check if we're on the semester averages page (Dönem Ortalamaları)
+                            # If so, we need to click on the latest semester to view individual grades
+                            try:
+                                semester_table = self.driver.find_element(By.ID, "grdOrtalamasi")
+                                if semester_table:
+                                    print("[*] Found semester averages table - need to click on a semester")
+                                    # Get all data rows (skip header row)
+                                    rows = semester_table.find_elements(By.TAG_NAME, "tr")
+                                    # Find the last data row (most recent semester)
+                                    # Skip header rows (usually first row and last pagination row)
+                                    data_rows = [r for r in rows if r.get_attribute("onclick") or 
+                                                any("Select$" in (td.get_attribute("onclick") or "") 
+                                                    for td in r.find_elements(By.TAG_NAME, "td"))]
+                                    
+                                    if data_rows:
+                                        latest_row = data_rows[-1]
+                                        semester_name = latest_row.text.split('\n')[0] if latest_row.text else "unknown"
+                                        print(f"[*] Clicking on latest semester: '{semester_name}'")
+                                        
+                                        # Click on the first cell to trigger the Select action
+                                        cells = latest_row.find_elements(By.TAG_NAME, "td")
+                                        if cells:
+                                            cells[0].click()
+                                            time.sleep(3)  # Wait for grades to load
+                                            print("[*] Clicked on semester row, waiting for grades...")
+                                            
+                                            # Handle any alert that might appear
+                                            self._dismiss_alerts(accept=True)
+                                    else:
+                                        print("[!] No clickable semester rows found")
+                            except Exception as e:
+                                print(f"[*] Not on semester averages page or no table found: {e}")
+                            
+                            break
+                        except Exception as e:
+                            print(f"[!] Error switching to IFRAME1: {e}")
+                            try:
+                                self.driver.switch_to.default_content()
+                            except:
+                                pass
+                
+                # If IFRAME1 wasn't found, try other iframes with grades-related src
+                if not switched_to_iframe:
+                    for iframe in iframes:
+                        try:
+                            iframe_id = iframe.get_attribute("id") or "no-id"
+                            iframe_src = iframe.get_attribute("src") or ""
+                            
+                            # Skip overlay/popup frames
+                            if 'overlay' in iframe_id.lower() or iframe_src == "":
+                                continue
+                            
+                            # Try switching to iframes that might contain grades
+                            if 'not' in iframe_src.lower() or 'start' in iframe_src.lower():
+                                print(f"[*] Trying iframe: id='{iframe_id}'...")
+                                self.driver.switch_to.frame(iframe)
+                                time.sleep(2)
+                                
+                                iframe_tables = self.driver.find_elements(By.TAG_NAME, "table")
+                                if len(iframe_tables) > 1:
+                                    print(f"[*] Found {len(iframe_tables)} tables in iframe!")
+                                    switched_to_iframe = True
+                                    break
+                                else:
+                                    self.driver.switch_to.default_content()
+                        except Exception as e:
+                            print(f"[!] Error with iframe: {e}")
+                            try:
+                                self.driver.switch_to.default_content()
+                            except:
+                                pass
             
             # Save page source for debugging
             try:
@@ -736,6 +989,10 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                 return []
             
             # Parse the grades table
+            table_id = main_table.get_attribute("id") or ""
+            print(f"[*] Parsing table with ID: '{table_id}'")
+            is_curriculum = "grd_ders" in table_id
+
             rows = main_table.find_elements(By.TAG_NAME, "tr")
             print(f"[*] Processing table with {len(rows)} rows")
             
@@ -748,7 +1005,7 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             header_texts = [cell.text.strip().lower() for cell in header_cells]
             print(f"[*] Header columns: {header_texts}")
             
-            # Find column indices
+            # Find column indices (for generic table)
             code_idx = None
             name_idx = None
             grade_idx = None
@@ -764,7 +1021,8 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                 elif 'sınav' in header or 'vize' in header or 'final' in header:
                     exam_grades_idx = i
             
-            print(f"[*] Column indices - Code: {code_idx}, Name: {name_idx}, Grade: {grade_idx}")
+            if not is_curriculum:
+                print(f"[*] Column indices - Code: {code_idx}, Name: {name_idx}, Grade: {grade_idx}")
             
             # Grade patterns to look for
             letter_grades = ["AA", "BA", "BB", "CB", "CC", "DC", "DD", "FF", "FD", "NA", "VZ", "MU"]
@@ -772,17 +1030,57 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             # Process data rows
             for row_idx, row in enumerate(rows[1:], start=1):  # Skip header
                 cols = row.find_elements(By.TAG_NAME, "td")
+                
+                # Special handling for Curriculum Table (grd_ders)
+                if is_curriculum:
+                    if len(cols) < 7:
+                        continue
+                    
+                    course_code = cols[0].text.strip()
+                    course_name = cols[1].text.strip()
+                    
+                    # The details are in the LAST column usually
+                    details_text = cols[-1].text.strip()
+                    
+                    # Regex to find grade at the end (e.g. "BA", "CC")
+                    # Pattern typically: [Term] Code Name ... Z Credit ECTS Grade Icon
+                    import re
+                    grade_match = re.search(r'\s([A-Z]{2})\s*$', details_text)
+                    final_grade = grade_match.group(1) if grade_match else ""
+                    
+                    # If not found via regex, try simple split
+                    if not final_grade and details_text:
+                        parts = details_text.split()
+                        if parts:
+                            last_token = parts[-1]
+                            if last_token in letter_grades:
+                                final_grade = last_token
+                    
+                    # Create grade info directly
+                    grade_info = {
+                        "course_code": course_code,
+                        "course_name": course_name,
+                        "grade": final_grade,
+                        "exam_grades": {},
+                        "status": "Final" if final_grade else ""
+                    }
+                    
+                    grades.append(grade_info)
+                    if final_grade:
+                        print(f"[*] Row {row_idx}: {course_code} - {course_name[:30]} = {final_grade}")
+                    continue
+
+                # Generic Table Parsing (Fallback)
                 if len(cols) < 3:
                     continue
                 
                 col_texts = [col.text.strip() for col in cols]
                 
-                # Extract course code - usually column 1 or 2 (after # column)
+                # Extract course code
                 course_code = ""
                 if code_idx is not None and code_idx < len(col_texts):
                     course_code = col_texts[code_idx]
                 else:
-                    # Heuristic: course code looks like "AIT0101", "BLM207", etc.
                     for i, text in enumerate(col_texts[:4]):
                         if text and len(text) >= 5 and len(text) <= 10:
                             if any(c.isalpha() for c in text) and any(c.isdigit() for c in text):
@@ -790,38 +1088,25 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                                 code_idx = i
                                 break
                 
-                # Extract course name - usually next column after code
+                # Extract course name
                 course_name = ""
                 if name_idx is not None and name_idx < len(col_texts):
                     course_name = col_texts[name_idx]
                 elif code_idx is not None and code_idx + 1 < len(col_texts):
                     course_name = col_texts[code_idx + 1]
                 
-                # Extract final grade from "Not" column
-                # Based on screenshot, "Not" column is around index 9-10
-                # It can contain numeric (89) or letter grade (AA)
+                # Extract final grade
                 final_grade = ""
-                
-                # First, try the grade_idx if we found it
                 if grade_idx is not None and grade_idx < len(col_texts):
-                    potential_grade = col_texts[grade_idx]
-                    if potential_grade:
-                        final_grade = potential_grade
+                    final_grade = col_texts[grade_idx]
                 
-                # If not found, search all columns for grade-like values
                 if not final_grade:
-                    # Search from the right side of the table (where "Not" column typically is)
+                    # Search from right
                     for i in range(len(col_texts) - 1, 2, -1):
                         text = col_texts[i].strip()
-                        if not text:
-                            continue
-                        
-                        # Check for letter grade
                         if text.upper() in letter_grades:
                             final_grade = text.upper()
                             break
-                        
-                        # Check for numeric grade (0-100)
                         try:
                             num = float(text.replace(',', '.'))
                             if 0 <= num <= 100:
@@ -830,11 +1115,10 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                         except ValueError:
                             pass
                 
-                # Also look for exam grades (Vize, Kısa Sınav, Final)
+                # Extract exam grades
                 exam_grades = {}
                 for i, text in enumerate(col_texts):
                     text_lower = text.lower()
-                    # Try to parse exam grades like "Vize: 85" or just numbers in specific columns
                     if 'vize' in text_lower or ':' in text:
                         parts = text.split(':')
                         if len(parts) == 2:
@@ -843,11 +1127,9 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                             except:
                                 pass
                 
-                # Skip invalid rows
                 if not course_code:
                     continue
                 
-                # Only add if we have valid data
                 grade_info = {
                     "course_code": course_code,
                     "course_name": course_name,
