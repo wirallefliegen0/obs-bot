@@ -10,7 +10,7 @@ import config
 
 
 async def send_message_async(text: str) -> bool:
-    """Send a message via Telegram bot asynchronously."""
+    
     try:
         bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
         await bot.send_message(
@@ -25,12 +25,12 @@ async def send_message_async(text: str) -> bool:
 
 
 def send_message(text: str) -> bool:
-    """Send a message via Telegram bot (sync wrapper)."""
+
     return asyncio.run(send_message_async(text))
 
 
 def format_grade_message(grade: dict) -> str:
-    """Format a grade dictionary into a nice Telegram message."""
+  
     course_code = grade.get("course_code", "N/A")
     course_name = grade.get("course_name", "N/A")
     grade_value = grade.get("grade", "N/A")
@@ -52,13 +52,13 @@ def format_grade_message(grade: dict) -> str:
 
 
 def send_grade_notification(grade: dict) -> bool:
-    """Send a notification for a new grade."""
+   
     message = format_grade_message(grade)
     return send_message(message)
 
 
 def send_multiple_grades_notification(grades: list[dict]) -> bool:
-    """Send a summary notification for multiple new grades."""
+
     if not grades:
         return False
     
@@ -80,7 +80,7 @@ def send_multiple_grades_notification(grades: list[dict]) -> bool:
 
 
 def send_startup_message() -> bool:
-    """Send a message when the bot starts."""
+
     message = (
         "🤖 <b>OBS Bildirim Botu Aktif!</b>\n\n"
         f"⏰ Kontrol sıklığı: {config.CHECK_INTERVAL} dakika\n"
@@ -90,6 +90,6 @@ def send_startup_message() -> bool:
 
 
 def send_error_notification(error_msg: str) -> bool:
-    """Send an error notification."""
+
     message = f"⚠️ <b>OBS Bot Hatası</b>\n\n{error_msg}"
     return send_message(message)
