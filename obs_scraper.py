@@ -465,15 +465,12 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                 return []
         
         try:
-            # After login, we need to click on "Not Listesi" from the menu
-            # Direct URL navigation doesn't work - opens session timeout page
-            print("[*] Looking for 'Not Listesi' menu item...")
-            
             # Wait a bit for the page to stabilize after login
             time.sleep(3)
             
             # Debug: Show current state after login
-            print(f"[*] Current URL after login: {self.driver.current_url}")
+            current_url = self.driver.current_url
+            print(f"[*] Current URL after login: {current_url}")
             print(f"[*] Page title: {self.driver.title}")
             
             # Take screenshot of post-login state
@@ -483,80 +480,48 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             except:
                 pass
             
-            # Try multiple ways to find and click the "Not Listesi" menu
-            menu_clicked = False
+            # Check if we're already on the grades page (index.aspx with curOp=0)
+            # If yes, don't navigate anywhere - that would break the session!
+            already_on_grades = 'index.aspx' in current_url.lower() and 'curop=0' in current_url.lower()
             
-            # Method 1: Find by text content
-            menu_xpaths = [
-                "//a[contains(text(), 'Not Listesi')]",
-                "//span[contains(text(), 'Not Listesi')]/..",
-                "//td[contains(text(), 'Not Listesi')]",
-                "//*[contains(text(), 'Not Listesi')]",
-                "//a[contains(@href, 'curOp=0')]",
-                "//a[contains(@title, 'Not')]",
-            ]
-            
-            for xpath in menu_xpaths:
-                try:
-                    elements = self.driver.find_elements(By.XPATH, xpath)
-                    for elem in elements:
-                        if elem.is_displayed():
-                            print(f"[*] Found menu item with xpath: {xpath}")
-                            elem.click()
-                            menu_clicked = True
-                            time.sleep(3)
-                            break
-                except Exception as e:
-                    continue
-                if menu_clicked:
-                    break
-            
-            # Method 2: If menu click failed, try JavaScript click
-            if not menu_clicked:
-                print("[*] Trying JavaScript to find menu...")
-                try:
-                    # Find all links and look for Not Listesi
-                    links = self.driver.find_elements(By.TAG_NAME, "a")
-                    for link in links:
-                        link_text = link.text.strip().lower()
-                        if 'not listesi' in link_text or 'not list' in link_text:
-                            self.driver.execute_script("arguments[0].click();", link)
-                            menu_clicked = True
-                            print("[*] Clicked 'Not Listesi' via JavaScript")
-                            time.sleep(3)
-                            break
-                except:
-                    pass
-            
-            # Method 3: Navigate to a specific known URL pattern for grades
-            if not menu_clicked:
-                print("[*] Menu click failed, trying alternative URL patterns...")
-                alternative_urls = [
-                    f"{config.OBS_BASE_URL}/oibs/std/start.aspx?gkm=014001000",
-                    f"{config.OBS_BASE_URL}/oibs/std/start.aspx?gkm=014001",
-                    f"{config.OBS_BASE_URL}/oibs/ogrenci/not_listesi.aspx",
+            if already_on_grades:
+                print("[*] Already on grades page after login! No navigation needed.")
+            else:
+                # Not on grades page, need to navigate
+                print("[*] Not on grades page, looking for 'Not Listesi' menu item...")
+                
+                # Try to find and click the "Not Listesi" menu
+                menu_clicked = False
+                
+                # Method 1: Find by text content
+                menu_xpaths = [
+                    "//a[contains(text(), 'Not Listesi')]",
+                    "//span[contains(text(), 'Not Listesi')]/..",
+                    "//td[contains(text(), 'Not Listesi')]",
+                    "//*[contains(text(), 'Not Listesi')]",
+                    "//a[contains(@href, 'curOp=0')]",
+                    "//a[contains(@title, 'Not')]",
                 ]
                 
-                for url in alternative_urls:
-                    print(f"[*] Trying URL: {url}")
-                    self.driver.get(url)
-                    time.sleep(3)
-                    
-                    # Check if we found a grades table
-                    page_text = self.driver.page_source.lower()
-                    if 'ders kodu' in page_text or 'ders adı' in page_text:
-                        print(f"[*] Found grades page at: {url}")
-                        menu_clicked = True
+                for xpath in menu_xpaths:
+                    try:
+                        elements = self.driver.find_elements(By.XPATH, xpath)
+                        for elem in elements:
+                            if elem.is_displayed():
+                                print(f"[*] Found menu item with xpath: {xpath}")
+                                elem.click()
+                                menu_clicked = True
+                                time.sleep(3)
+                                break
+                    except Exception as e:
+                        continue
+                    if menu_clicked:
                         break
+                
+                if not menu_clicked:
+                    print("[!] Could not find 'Not Listesi' menu - staying on current page")
             
-            if not menu_clicked:
-                # Last resort: try the original URL and see what happens
-                grades_url = f"{config.OBS_BASE_URL}/oibs/std/index.aspx?curOp=0"
-                print(f"[*] Trying original URL as last resort: {grades_url}")
-                self.driver.get(grades_url)
-                time.sleep(3)
-            
-            # Wait for page to load
+            # Wait for any page transitions
             time.sleep(2)
             
             # Save page source for debugging
