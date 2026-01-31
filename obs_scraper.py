@@ -529,14 +529,47 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                 if not menu_clicked:
                     print("[!] Could not find 'Not Listesi' menu - staying on current page")
             
-            # Wait for any page transitions
-            time.sleep(2)
+            # Wait longer for AJAX/dynamic content to load
+            print("[*] Waiting for dynamic content to load...")
+            time.sleep(5)
+            
+            # Check for iframes - OBS might load content in an iframe
+            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+            print(f"[*] Found {len(iframes)} iframe(s) on page")
+            
+            if iframes:
+                for idx, iframe in enumerate(iframes):
+                    try:
+                        iframe_id = iframe.get_attribute("id") or "no-id"
+                        iframe_src = iframe.get_attribute("src") or "no-src"
+                        print(f"[*] Iframe {idx+1}: id='{iframe_id}' src='{iframe_src[:50]}'")
+                        
+                        # Try switching to iframe that might contain grades
+                        if 'not' in iframe_src.lower() or 'ders' in iframe_src.lower() or iframe_src == 'no-src':
+                            print(f"[*] Switching to iframe {idx+1}...")
+                            self.driver.switch_to.frame(iframe)
+                            time.sleep(2)
+                            # Check if this iframe has the grades
+                            iframe_tables = self.driver.find_elements(By.TAG_NAME, "table")
+                            if len(iframe_tables) > 1:
+                                print(f"[*] Found {len(iframe_tables)} tables in iframe!")
+                                break
+                            else:
+                                # Switch back and try next iframe
+                                self.driver.switch_to.default_content()
+                    except Exception as e:
+                        print(f"[!] Error with iframe: {e}")
+                        try:
+                            self.driver.switch_to.default_content()
+                        except:
+                            pass
             
             # Save page source for debugging
             try:
+                page_source = self.driver.page_source
                 with open("obs_grades_page.html", "w", encoding="utf-8") as f:
-                    f.write(self.driver.page_source)
-                print("[*] Saved page source to obs_grades_page.html")
+                    f.write(page_source)
+                print(f"[*] Saved page source ({len(page_source)} chars) to obs_grades_page.html")
             except:
                 pass
             
@@ -554,13 +587,16 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             # Debug: Print some page content to see what we got
             try:
                 body_text = self.driver.find_element(By.TAG_NAME, "body").text
+                print(f"[*] Page body length: {len(body_text)} chars")
                 # Look for grade-related keywords
                 if 'ders kodu' in body_text.lower():
                     print("[*] Page contains 'Ders Kodu' - likely grades page!")
                 elif 'oturum' in body_text.lower():
                     print("[!] Page contains 'oturum' - might be session warning!")
-                    # Try to dump first 500 chars for debugging
-                    print(f"[*] Page preview: {body_text[:500]}")
+                elif len(body_text) < 100:
+                    print(f"[!] Page body very short! Content: {body_text}")
+                # Preview first 300 chars
+                print(f"[*] Page preview: {body_text[:300]}")
             except:
                 pass
             
