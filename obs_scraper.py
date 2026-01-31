@@ -529,9 +529,72 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                 if not menu_clicked:
                     print("[!] Could not find 'Not Listesi' menu - staying on current page")
             
+            # Wait for page to load
+            print("[*] Waiting for page content to load...")
+            time.sleep(3)
+            
+            # CRITICAL: Close any popup/modal that appears on the page
+            # The grades page shows a "Notlar" info popup that blocks the table
+            print("[*] Checking for popups/modals to close...")
+            
+            popup_closed = False
+            close_button_xpaths = [
+                "//button[contains(@class, 'close')]",
+                "//a[contains(@class, 'close')]",
+                "//span[contains(@class, 'close')]",
+                "//*[contains(@onclick, 'close')]",
+                "//*[contains(@onclick, 'hide')]",
+                "//div[contains(@class, 'modal')]//button",
+                "//div[contains(@class, 'popup')]//button",
+                "//button[text()='X' or text()='x']",
+                "//a[text()='X' or text()='x']",
+                "//*[@aria-label='Close']",
+                "//button[contains(@class, 'btn-close')]",
+                # Turkish close buttons
+                "//button[contains(text(), 'Kapat')]",
+                "//a[contains(text(), 'Kapat')]",
+                "//input[@value='Kapat']",
+                # X in various containers
+                "//div[contains(@class, 'panel')]//a[contains(@href, 'javascript')]",
+            ]
+            
+            for xpath in close_button_xpaths:
+                try:
+                    close_buttons = self.driver.find_elements(By.XPATH, xpath)
+                    for btn in close_buttons:
+                        if btn.is_displayed():
+                            print(f"[*] Found close button: {xpath}")
+                            try:
+                                btn.click()
+                                popup_closed = True
+                                time.sleep(1)
+                                print("[*] Clicked close button!")
+                            except:
+                                # Try JavaScript click
+                                try:
+                                    self.driver.execute_script("arguments[0].click();", btn)
+                                    popup_closed = True
+                                    time.sleep(1)
+                                    print("[*] Clicked close button via JS!")
+                                except:
+                                    pass
+                except:
+                    continue
+            
+            # Also try pressing Escape key to close any modal
+            try:
+                from selenium.webdriver.common.keys import Keys
+                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                time.sleep(1)
+            except:
+                pass
+            
+            if popup_closed:
+                print("[*] Popup closed, waiting for table to be visible...")
+                time.sleep(2)
+            
             # Wait longer for AJAX/dynamic content to load
-            print("[*] Waiting for dynamic content to load...")
-            time.sleep(5)
+            time.sleep(2)
             
             # Check for iframes - OBS might load content in an iframe
             iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
