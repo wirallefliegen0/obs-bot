@@ -331,7 +331,7 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
         print(f"[!] Cannot solve captcha: {captcha_text}")
         return None
     
-    def login(self, max_retries: int = 2) -> bool:
+    def login(self, max_retries: int = 5) -> bool:
         """
         Login to BTU OBS system with retry mechanism.
         Retries on captcha failure since OCR might misread.
@@ -406,8 +406,18 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             login_button = self.driver.find_element(By.ID, "btnLogin")
             login_button.click()
             
-            # Wait for response
-            time.sleep(4)
+            # Wait for response - give more time for redirect to main page
+            time.sleep(6)
+            
+            # Additional wait for page to stabilize
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: 'login.aspx' not in d.current_url.lower() or 
+                              'çıkış' in d.page_source.lower() or
+                              'start.aspx' in d.current_url.lower()
+                )
+            except:
+                pass  # Timeout is OK, we'll check manually
             
             # Check if login successful
             page_source = self.driver.page_source.lower()
@@ -460,7 +470,18 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             print("[*] Looking for 'Not Listesi' menu item...")
             
             # Wait a bit for the page to stabilize after login
-            time.sleep(2)
+            time.sleep(3)
+            
+            # Debug: Show current state after login
+            print(f"[*] Current URL after login: {self.driver.current_url}")
+            print(f"[*] Page title: {self.driver.title}")
+            
+            # Take screenshot of post-login state
+            try:
+                self.driver.save_screenshot("obs_after_login.png")
+                print("[*] Saved post-login screenshot to obs_after_login.png")
+            except:
+                pass
             
             # Try multiple ways to find and click the "Not Listesi" menu
             menu_clicked = False
