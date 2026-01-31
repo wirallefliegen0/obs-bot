@@ -6,9 +6,9 @@ Bursa Teknik Üniversitesi OBS sistemini otomatik kontrol edip, yeni sınav sonu
 
 - 🔄 Belirli aralıklarla OBS'yi otomatik kontrol eder
 - 📱 Yeni not açıklandığında Telegram'dan bildirim gönderir
-- 🧮 Matematik captcha'yı otomatik çözer
+- � **Gemini Vision AI** ile matematik captcha'yı %100'e yakın çözer (v3.0 Pro / v1.5 Flash)
 - 💾 Notları cache'leyerek gereksiz bildirim göndermez
-- ☁️ Ücretsiz cloud platformlarında çalışabilir
+- ☁️ GitHub Actions ile **ömür boyu ücretsiz** çalışır
 
 ## 🚀 Kurulum
 
@@ -29,7 +29,13 @@ Bursa Teknik Üniversitesi OBS sistemini otomatik kontrol edip, yeni sınav sonu
    ```
 3. JSON'daki `"chat":{"id":123456789}` kısmından **chat_id**'yi bul
 
-### 3. Lokal Kurulum
+### 3. Gemini API Key Alma (Ücretsiz)
+
+1. [Google AI Studio](https://aistudio.google.com/app/apikey) adresine git.
+2. "Create API Key" butonuna bas.
+3. Aldığın anahtarı kaydet.
+
+### 4. Lokal Kurulum
 
 ```bash
 # Python 3.10+ gerekli
@@ -47,7 +53,7 @@ copy .env.example .env
 # .env dosyasını düzenleyerek bilgilerini gir
 ```
 
-### 4. Ortam Değişkenlerini Ayarlama
+### 5. Ortam Değişkenlerini Ayarlama
 
 `.env` dosyasını aç ve bilgilerini gir:
 
@@ -56,10 +62,11 @@ OBS_USERNAME=ogrenci_numaran
 OBS_PASSWORD=obs_sifren
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
 TELEGRAM_CHAT_ID=123456789
+GEMINI_API_KEY=AIzaSy... (API Keyin)
 CHECK_INTERVAL=30
 ```
 
-### 5. Test Etme
+### 6. Test Etme
 
 ```bash
 python main.py --test
@@ -68,14 +75,16 @@ python main.py --test
 Bu komut:
 - Konfigürasyonu doğrular
 - Telegram bağlantısını test eder
-- OBS'ye giriş yapmayı dener
+- OBS'ye giriş yapmayı dener (Gemini ile captcha çözer)
 - Mevcut notları gösterir
 
 ## ☁️ Cloud Deployment (Ücretsiz 7/24 Çalıştırma)
 
-### 🏆 GitHub Actions (Önerilen - En Kolay)
+### 🏆 GitHub Actions (Önerilen)
 
-Bu repo GitHub Actions ile her 7 dakikada bir otomatik kontrol yapar.
+Bu yöntem ile bot, GitHub sunucularında 5-7 dakikada bir çalışır, notları kontrol eder ve kapanır. **Tamamen ücretsizdir.**
+
+> **Not:** Bot sürekli açık (listening) modda değildir. Yani Telegram'dan mesaj attığınızda cevap vermez. Sadece not açıklandığında size mesaj atar.
 
 #### Kurulum:
 
@@ -91,11 +100,12 @@ Bu repo GitHub Actions ile her 7 dakikada bir otomatik kontrol yapar.
 
 2. **GitHub Secrets ekle:**
    - Repo → Settings → Secrets and variables → Actions → New repository secret
-   - Şu 4 secret'ı ekle:
+   - Şu 5 secret'ı ekle:
      - `OBS_USERNAME` - OBS öğrenci numaran
      - `OBS_PASSWORD` - OBS şifren
      - `TELEGRAM_BOT_TOKEN` - BotFather'dan aldığın token
      - `TELEGRAM_CHAT_ID` - Chat ID'n
+     - `GEMINI_API_KEY` - Google AI Studio'dan aldığın anahtar
 
 3. **Actions'ı aktifleştir:**
    - Repo → Actions → "I understand my workflows, go ahead and enable them"
@@ -103,20 +113,18 @@ Bu repo GitHub Actions ile her 7 dakikada bir otomatik kontrol yapar.
 4. **Manuel test:**
    - Actions → "BTU OBS Grade Checker" → "Run workflow"
 
-✅ Artık her 7 dakikada bir otomatik kontrol yapılacak!
-
-### Railway.app (Alternatif)
+✅ Artık her 5 dakikada bir otomatik kontrol yapılacak!
 
 ## 🔧 Kullanım
 
 ```bash
-# Normal modda çalıştır (sürekli kontrol)
+# Normal modda çalıştır (sürekli kontrol - yerel bilgisayarda)
 python main.py
 
 # Test modu
 python main.py --test
 
-# Tek seferlik kontrol
+# Tek seferlik kontrol (GitHub Actions bu modu kullanır)
 python main.py --once
 ```
 
@@ -125,7 +133,7 @@ python main.py --once
 ```
 oku/
 ├── config.py           # Konfigürasyon yönetimi
-├── obs_scraper.py      # OBS login ve not çekme
+├── obs_scraper.py      # OBS login, Gemini captcha ve not çekme
 ├── telegram_bot.py     # Telegram bildirimleri
 ├── main.py             # Ana çalıştırıcı
 ├── requirements.txt    # Python bağımlılıkları
@@ -137,7 +145,7 @@ oku/
 ## ⚠️ Önemli Notlar
 
 - **Şifreni güvenli tut**: `.env` dosyasını asla Git'e commit etme
-- **Kontrol sıklığı**: Çok sık kontrol OBS'nin seni engellemesine neden olabilir (30dk önerilir)
+- **Kontrol sıklığı**: GitHub Actions schedule'ı en sık 5 dakikada bir çalışabilir.
 - **OBS yapısı değişebilir**: Sayfa yapısı değişirse scraper güncellenmeli
 
 ## 🐛 Sorun Giderme
