@@ -441,7 +441,12 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
     
     def fetch_grades(self) -> list[dict]:
         """
-        Fetch current grades from OBS.
+        Fetch current grades from OBS (Not Listesi page).
+        
+        BTU OBS Table Structure (from screenshot):
+        | # | Ders Kodu | Ders Adı | Sonuç/Durumu | Sınav Notları (Vize/Kısa Sınv/Final) | Örf | Not | Durumu |
+        
+        The "Not" column contains the final grade (e.g., 89, AA).
         Returns list of grade dictionaries.
         """
         if not self.logged_in:
@@ -450,38 +455,211 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                 return []
         
         try:
-            # Navigate to grades page
-            grades_url = f"{config.OBS_BASE_URL}/oibs/std/start.aspx?gkm=014001"
-            print(f"[*] Navigating to grades page...")
+            # Navigate to the grades page ("Not Listesi")
+            # User confirmed the URL is index.aspx?curOp=0
+            grades_url = f"{config.OBS_BASE_URL}/oibs/std/index.aspx?curOp=0"
+            print(f"[*] Navigating to grades page: {grades_url}")
             self.driver.get(grades_url)
             
             # Wait for page to load
-            time.sleep(3)
+            time.sleep(4)
+            
+            # Save page source for debugging
+            try:
+                with open("obs_grades_page.html", "w", encoding="utf-8") as f:
+                    f.write(self.driver.page_source)
+                print("[*] Saved page source to obs_grades_page.html")
+            except:
+                pass
+            
+            # Take screenshot for debugging
+            try:
+                self.driver.save_screenshot("obs_grades_page.png")
+                print("[*] Saved screenshot to obs_grades_page.png")
+            except:
+                pass
             
             grades = []
             
-            # Find grade tables
-            tables = self.driver.find_elements(By.XPATH, "//table[contains(@class, 'grid') or contains(@class, 'table') or contains(@id, 'grd')]")
+            # Strategy: Look for the main grades table
+            # The table should have columns like "Ders Kodu", "Ders Adı", "Not"
+            table_xpaths = [
+                "//table[contains(@id, 'grd')]",
+                "//table[contains(@id, 'Grid')]",
+                "//table[.//th[contains(text(), 'Ders') or contains(text(), 'Not')]]",
+                "//table[.//td[contains(text(), 'Sonuç')]]",
+                "//table[contains(@class, 'grid')]",
+                "//table[contains(@class, 'DataGrid')]",
+                "//div[contains(@class, 'content')]//table",
+                "//table[@border]",
+                "//table"
+            ]
             
-            for table in tables:
-                rows = table.find_elements(By.TAG_NAME, "tr")
-                for row in rows[1:]:  # Skip header
-                    cols = row.find_elements(By.TAG_NAME, "td")
-                    if len(cols) >= 3:
-                        grade_info = {
-                            "course_code": cols[0].text.strip(),
-                            "course_name": cols[1].text.strip() if len(cols) > 1 else "",
-                            "grade": cols[2].text.strip() if len(cols) > 2 else "",
-                            "status": cols[3].text.strip() if len(cols) > 3 else "",
-                        }
-                        if grade_info["course_code"] and grade_info["grade"]:
-                            grades.append(grade_info)
+            main_table = None
+            for xpath in table_xpaths:
+                tables = self.driver.find_elements(By.XPATH, xpath)
+                for table in tables:
+                    # Check if this table looks like a grades table
+                    table_text = table.text.lower()
+                    if 'ders' in table_text or 'not' in table_text or 'vize' in table_text:
+                        rows = table.find_elements(By.TAG_NAME, "tr")
+                        if len(rows) >= 2:  # At least header + 1 row
+                            main_table = table
+                            print(f"[*] Found grades table with xpath: {xpath}")
+                            break
+                if main_table:
+                    break
             
-            print(f"[*] Found {len(grades)} grades")
+            if not main_table:
+                # Fallback: find any table with multiple rows
+                all_tables = self.driver.find_elements(By.TAG_NAME, "table")
+                for table in all_tables:
+                    rows = table.find_elements(By.TAG_NAME, "tr")
+                    if len(rows) >= 3:  # Header + at least 2 data rows
+                        main_table = table
+                        print(f"[*] Using fallback table with {len(rows)} rows")
+                        break
+            
+            if not main_table:
+                print("[!] No suitable grades table found!")
+                return []
+            
+            # Parse the grades table
+            rows = main_table.find_elements(By.TAG_NAME, "tr")
+            print(f"[*] Processing table with {len(rows)} rows")
+            
+            # Analyze header to find column indices
+            header_row = rows[0] if rows else None
+            header_cells = header_row.find_elements(By.TAG_NAME, "th") if header_row else []
+            if not header_cells:
+                header_cells = header_row.find_elements(By.TAG_NAME, "td") if header_row else []
+            
+            header_texts = [cell.text.strip().lower() for cell in header_cells]
+            print(f"[*] Header columns: {header_texts}")
+            
+            # Find column indices
+            code_idx = None
+            name_idx = None
+            grade_idx = None
+            exam_grades_idx = None
+            
+            for i, header in enumerate(header_texts):
+                if 'ders kodu' in header or header == 'ders kodu':
+                    code_idx = i
+                elif 'ders adı' in header or header == 'ders adı':
+                    name_idx = i
+                elif header == 'not' or header == 'harf notu':
+                    grade_idx = i
+                elif 'sınav' in header or 'vize' in header or 'final' in header:
+                    exam_grades_idx = i
+            
+            print(f"[*] Column indices - Code: {code_idx}, Name: {name_idx}, Grade: {grade_idx}")
+            
+            # Grade patterns to look for
+            letter_grades = ["AA", "BA", "BB", "CB", "CC", "DC", "DD", "FF", "FD", "NA", "VZ", "MU"]
+            
+            # Process data rows
+            for row_idx, row in enumerate(rows[1:], start=1):  # Skip header
+                cols = row.find_elements(By.TAG_NAME, "td")
+                if len(cols) < 3:
+                    continue
+                
+                col_texts = [col.text.strip() for col in cols]
+                
+                # Extract course code - usually column 1 or 2 (after # column)
+                course_code = ""
+                if code_idx is not None and code_idx < len(col_texts):
+                    course_code = col_texts[code_idx]
+                else:
+                    # Heuristic: course code looks like "AIT0101", "BLM207", etc.
+                    for i, text in enumerate(col_texts[:4]):
+                        if text and len(text) >= 5 and len(text) <= 10:
+                            if any(c.isalpha() for c in text) and any(c.isdigit() for c in text):
+                                course_code = text
+                                code_idx = i
+                                break
+                
+                # Extract course name - usually next column after code
+                course_name = ""
+                if name_idx is not None and name_idx < len(col_texts):
+                    course_name = col_texts[name_idx]
+                elif code_idx is not None and code_idx + 1 < len(col_texts):
+                    course_name = col_texts[code_idx + 1]
+                
+                # Extract final grade from "Not" column
+                # Based on screenshot, "Not" column is around index 9-10
+                # It can contain numeric (89) or letter grade (AA)
+                final_grade = ""
+                
+                # First, try the grade_idx if we found it
+                if grade_idx is not None and grade_idx < len(col_texts):
+                    potential_grade = col_texts[grade_idx]
+                    if potential_grade:
+                        final_grade = potential_grade
+                
+                # If not found, search all columns for grade-like values
+                if not final_grade:
+                    # Search from the right side of the table (where "Not" column typically is)
+                    for i in range(len(col_texts) - 1, 2, -1):
+                        text = col_texts[i].strip()
+                        if not text:
+                            continue
+                        
+                        # Check for letter grade
+                        if text.upper() in letter_grades:
+                            final_grade = text.upper()
+                            break
+                        
+                        # Check for numeric grade (0-100)
+                        try:
+                            num = float(text.replace(',', '.'))
+                            if 0 <= num <= 100:
+                                final_grade = text
+                                break
+                        except ValueError:
+                            pass
+                
+                # Also look for exam grades (Vize, Kısa Sınav, Final)
+                exam_grades = {}
+                for i, text in enumerate(col_texts):
+                    text_lower = text.lower()
+                    # Try to parse exam grades like "Vize: 85" or just numbers in specific columns
+                    if 'vize' in text_lower or ':' in text:
+                        parts = text.split(':')
+                        if len(parts) == 2:
+                            try:
+                                exam_grades[parts[0].strip()] = float(parts[1].strip().replace(',', '.'))
+                            except:
+                                pass
+                
+                # Skip invalid rows
+                if not course_code:
+                    continue
+                
+                # Only add if we have valid data
+                grade_info = {
+                    "course_code": course_code,
+                    "course_name": course_name,
+                    "grade": final_grade,
+                    "exam_grades": exam_grades,
+                    "status": ""
+                }
+                
+                grades.append(grade_info)
+                print(f"[*] Row {row_idx}: {course_code} - {course_name[:30]} = {final_grade or 'No grade yet'}")
+            
+            print(f"[*] Found {len(grades)} course(s) total")
+            
+            # Filter to only courses with grades
+            graded_courses = [g for g in grades if g.get("grade")]
+            print(f"[*] Courses with grades: {len(graded_courses)}")
+            
             return grades
             
         except Exception as e:
             print(f"[!] Error fetching grades: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def close(self):
@@ -498,19 +676,35 @@ def get_new_grades(cached_grades: list[dict], current_grades: list[dict]) -> lis
     """
     Compare cached and current grades to find new ones.
     Returns list of newly added or changed grades.
+    
+    Only considers courses that have a grade (not empty).
     """
     new_grades = []
     
-    cached_lookup = {
-        f"{g['course_code']}_{g.get('exam_type', '')}": g.get('grade', '')
-        for g in cached_grades
-    }
+    # Build lookup from cached grades (only courses with grades)
+    cached_lookup = {}
+    for g in cached_grades:
+        grade = g.get('grade', '')
+        if grade:  # Only add if has a grade
+            key = g['course_code']
+            cached_lookup[key] = grade
     
+    # Check current grades for new or changed ones
     for grade in current_grades:
-        key = f"{grade['course_code']}_{grade.get('exam_type', '')}"
+        current_grade = grade.get('grade', '')
+        
+        # Skip courses without grades
+        if not current_grade:
+            continue
+        
+        key = grade['course_code']
         cached_grade = cached_lookup.get(key)
         
-        if cached_grade is None or cached_grade != grade.get('grade', ''):
+        # New grade if:
+        # 1. Course wasn't in cache with a grade (new grade entry)
+        # 2. Grade value changed (updated grade)
+        if cached_grade is None or cached_grade != current_grade:
             new_grades.append(grade)
+            print(f"[+] New/changed grade: {key} = {current_grade} (was: {cached_grade})")
     
     return new_grades
