@@ -558,6 +558,24 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
             
             grades = []
             
+            # First, let's debug what tables exist on the page
+            all_tables_debug = self.driver.find_elements(By.TAG_NAME, "table")
+            print(f"[*] Total tables on page: {len(all_tables_debug)}")
+            
+            for idx, table in enumerate(all_tables_debug):
+                try:
+                    table_id = table.get_attribute("id") or "no-id"
+                    table_class = table.get_attribute("class") or "no-class"
+                    rows = table.find_elements(By.TAG_NAME, "tr")
+                    # Get first row text preview
+                    first_row_text = ""
+                    if rows:
+                        cells = rows[0].find_elements(By.TAG_NAME, "td") or rows[0].find_elements(By.TAG_NAME, "th")
+                        first_row_text = " | ".join([c.text.strip()[:20] for c in cells[:5]])
+                    print(f"[*] Table {idx+1}: id='{table_id}' class='{table_class}' rows={len(rows)} preview='{first_row_text[:60]}'")
+                except:
+                    pass
+            
             # Strategy: Look for the main grades table
             # The table should have columns like "Ders Kodu", "Ders Adı", "Not"
             table_xpaths = [
@@ -588,14 +606,23 @@ Başka hiçbir şey yazma, sadece sonuç sayısını yaz."""
                     break
             
             if not main_table:
-                # Fallback: find any table with multiple rows
+                # Fallback: find any table with multiple rows that contains course-like content
                 all_tables = self.driver.find_elements(By.TAG_NAME, "table")
                 for table in all_tables:
                     rows = table.find_elements(By.TAG_NAME, "tr")
-                    if len(rows) >= 3:  # Header + at least 2 data rows
-                        main_table = table
-                        print(f"[*] Using fallback table with {len(rows)} rows")
-                        break
+                    if len(rows) >= 2:  # At least header + 1 data row
+                        # Check if any cell looks like a course code (e.g., "BLM207", "AIT0101")
+                        table_text = table.text
+                        # Look for patterns like 3 letters + numbers
+                        import re
+                        if re.search(r'[A-Z]{2,4}\d{3,4}', table_text):
+                            main_table = table
+                            print(f"[*] Found table with course codes pattern, rows={len(rows)}")
+                            break
+                        elif len(rows) >= 5:  # Large table might be grades
+                            main_table = table
+                            print(f"[*] Using large fallback table with {len(rows)} rows")
+                            break
             
             if not main_table:
                 print("[!] No suitable grades table found!")
